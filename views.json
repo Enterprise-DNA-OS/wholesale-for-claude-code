@@ -1,13 +1,63 @@
 [
   {
-    "name": "week",
-    "title": "This week",
-    "subtitle": "Wholesale for Claude Code: what needs attention, rendered by npm run view",
+    "name": "ops",
+    "title": "The warehouse",
+    "subtitle": "Wholesale for Claude Code: what needs a decision, the order board, the backorders, the reorder run and the purchase orders. Rendered by npm run view.",
     "sections": [
       {
-        "title": "Needs attention",
-        "note": "TODO(author): point this at the industry's attention view (overdue, stuck, quiet).",
-        "sql": "select 'replace me' as item, 'TODO(author)' as why"
+        "title": "Needs a decision",
+        "note": "Hazardous stock over its ceiling, backorders with nothing behind them, empty shelves, stuck orders, money asleep. Worst first.",
+        "sql": "select case reason when 'haz_over_threshold' then 'HAZARDOUS STOCK OVER THE CEILING' when 'backorder_no_po' then 'Backordered, NO purchase order' when 'reorder_due' then 'Under the reorder point' when 'po_overdue' then 'Purchase order overdue' when 'so_late' then 'Past the required date' when 'so_stuck' then 'Entered, nothing shipped' when 'price_missing' then 'No price: goods leaving for $0' when 'below_cost' then 'Priced below cost' when 'unbilled_shipped' then 'Shipped, not billed' when 'invoice_overdue' then 'Invoice overdue' when 'invoice_draft' then 'Draft never sent' when 'over_credit_limit' then 'Over the credit limit' when 'customer_quiet' then 'Regular gone quiet' when 'adjustment_no_reason' then 'Adjustment with no reason' when 'task_overdue' then 'Task overdue' else reason end as what, label as record, customer, days, case when amount_cents > 0 then to_char(amount_cents / 100.0, 'FM$999,999,990') else '' end as value, detail from v_attention order by case reason when 'haz_over_threshold' then 1 when 'backorder_no_po' then 2 when 'reorder_due' then 3 when 'po_overdue' then 4 when 'so_late' then 5 when 'so_stuck' then 6 when 'price_missing' then 7 when 'below_cost' then 8 when 'unbilled_shipped' then 9 when 'invoice_overdue' then 10 when 'invoice_draft' then 11 when 'over_credit_limit' then 12 when 'customer_quiet' then 13 when 'adjustment_no_reason' then 14 else 15 end, days desc nulls last"
+      },
+      {
+        "title": "The order board",
+        "note": "Every sales order still in play, in working order.",
+        "sql": "select so_no, customer || case when on_stop then ' [STOP]' else '' end as customer, status, to_char(ordered_on, 'YYYY-MM-DD') as ordered, case when required_by is null then '' else to_char(required_by, 'YYYY-MM-DD') || case when days_late > 0 then ' (' || days_late || 'd LATE)' else '' end end as required, lines, case when units_unshipped > 0 then units_unshipped::text else '' end as unshipped, to_char(value_cents / 100.0, 'FM$999,999,990') as value, trim(case when has_unpriced then 'NO PRICE ' else '' end || case when has_below_cost then 'BELOW COST' else '' end) as flags from v_order_board where status in ('open', 'part', 'on-hold') order by case status when 'part' then 0 when 'open' then 1 else 2 end, required_by nulls last"
+      },
+      {
+        "title": "Backorders",
+        "note": "Every short quantity, with the inbound purchase order that covers it, or the loud absence of one.",
+        "sql": "select so_no, customer, sku, qty_short, available, on_order, case when next_incoming_on is null then 'NO PO' else to_char(next_incoming_on, 'YYYY-MM-DD') end as incoming, to_char(required_by, 'YYYY-MM-DD') as required, to_char(value_cents / 100.0, 'FM$999,999,990') as value from v_backorders order by required_by nulls last"
+      },
+      {
+        "title": "The reorder run",
+        "note": "available + on order at or under the reorder point: what to buy, with the supplier's lead time beside it.",
+        "sql": "select sku, name as product, on_hand, allocated, available, on_order, reorder_point as point, suggested_qty as suggest, coalesce(supplier, '') as supplier, coalesce(lead_time_days || 'd', '') as lead from v_reorder order by (available + on_order) - reorder_point"
+      },
+      {
+        "title": "Purchase orders open",
+        "sql": "select po.po_no, s.name as supplier, po.status, to_char(po.ordered_on, 'YYYY-MM-DD') as ordered, to_char(po.expected_on, 'YYYY-MM-DD') || case when po.expected_on < now()::date then ' OVERDUE' else '' end as expected, coalesce((select sum(l.qty - l.qty_received) from po_lines l where l.po_id = po.id), 0) as units_open from purchase_orders po join suppliers s on s.id = po.supplier_id where po.status in ('open', 'part') order by po.expected_on nulls last"
+      }
+    ]
+  },
+  {
+    "name": "money",
+    "title": "The money",
+    "subtitle": "What is ready to bill, the debtors, customer exposure, the margins and the dead stock. Rendered by npm run view.",
+    "sections": [
+      {
+        "title": "Ready to bill",
+        "note": "Shipped quantities on no invoice. One command drafts it all: bill.",
+        "sql": "select so_no, customer, sku, qty_unbilled as qty, to_char(value_cents / 100.0, 'FM$999,999,990') as value, days_unbilled from v_unbilled order by days_unbilled desc"
+      },
+      {
+        "title": "Debtors",
+        "sql": "select number, customer, to_char(total_cents / 100.0, 'FM$999,999,990') as total, case when status = 'draft' then 'draft NOT SENT' else status end as status, to_char(due_on, 'YYYY-MM-DD') as due, coalesce(bucket, '') as aged, coalesce(days_overdue || 'd', '') as overdue from v_debtors order by days_overdue desc nulls last"
+      },
+      {
+        "title": "Customer exposure",
+        "note": "Owing plus shipped-unbilled goods, against the credit limit.",
+        "sql": "select customer || case when on_stop then ' [STOP]' else '' end as customer, open_orders as open, case when owing_cents > 0 then to_char(owing_cents / 100.0, 'FM$999,999,990') else '' end as owing, case when unbilled_cents > 0 then to_char(unbilled_cents / 100.0, 'FM$999,999,990') else '' end as unbilled, case when exposure_cents > 0 then to_char(exposure_cents / 100.0, 'FM$999,999,990') else '' end as exposure, case when credit_limit_cents is null then 'cash' else to_char(credit_limit_cents / 100.0, 'FM$999,999,990') || case when exposure_cents > credit_limit_cents then ' OVER' else '' end end as limit_ from v_customer_position where status = 'active' and (exposure_cents > 0 or open_orders > 0) order by exposure_cents desc"
+      },
+      {
+        "title": "Margins, last 28 days",
+        "note": "Off the stamped line prices and cost snapshots. A loss here is a price that needs a decision, not a mystery.",
+        "sql": "select sku, product, units_shipped as units, to_char(revenue_cents / 100.0, 'FM$999,999,990') as revenue, to_char(cost_cents / 100.0, 'FM$999,999,990') as cost, to_char(margin_cents / 100.0, 'FM$999,999,990') || case when margin_cents < 0 then ' LOSS' else '' end as margin, coalesce(margin_pct || '%', '') as pct from v_margins order by margin_cents"
+      },
+      {
+        "title": "Dead stock",
+        "note": "Held over 90 days, no sale in 90 days, nothing allocated. Cash on a shelf.",
+        "sql": "select sku, name as product, on_hand, to_char(value_cents / 100.0, 'FM$999,999,990') as value_at_cost, days_held || 'd' as held, case when last_shipped_at is null then 'never' else to_char(last_shipped_at, 'YYYY-MM-DD') end as last_sold from v_dead_stock order by value_cents desc"
       }
     ]
   }

@@ -1,11 +1,66 @@
 [
   {
-    "name": "example",
-    "title": "TODO(author): the first document this industry must produce",
-    "for_each": "select gen_random_uuid() as id, 'Example' as name",
+    "name": "invoice",
+    "title": "Tax invoice",
+    "for_each": "select i.id, (i.number || ' ' || c.name) as name from invoices i join customers c on c.id = i.customer_id where i.status <> 'paid' order by i.issued_on desc",
     "file": "name",
     "sections": [
-      { "title": "Details", "sql": "select 'replace me' as item, $1::text as record_id" }
+      {
+        "title": "Invoice",
+        "note": "Drafted from the shipment record. Put your GST number in brand.json: taxable supply information rules want it on every invoice. Check it, then send it yourself: this system never sends anything.",
+        "sql": "select i.number, c.name as billed_to, coalesce(c.address, 'ADDRESS MISSING: customer set --address=') as address, coalesce(c.contact_name, '') as attention, to_char(i.issued_on, 'DD Month YYYY') as issued, to_char(i.due_on, 'DD Month YYYY') as due, to_char(i.total_cents / 100.0, 'FM$999,999,990.00') as total_incl_gst from invoices i join customers c on c.id = i.customer_id where i.id = $1"
+      },
+      {
+        "title": "Lines",
+        "sql": "select il.description, coalesce(il.qty::text, '') as qty, to_char(il.amount_cents / 100.0, 'FM$999,999,990.00') as amount from invoice_lines il where il.invoice_id = $1 order by il.created_at"
+      }
+    ]
+  },
+  {
+    "name": "picking-slip",
+    "title": "Picking slip",
+    "for_each": "select so.id, (so.so_no || ' ' || c.name) as name from sales_orders so join customers c on c.id = so.customer_id where so.status in ('open', 'part') order by so.required_by nulls last",
+    "file": "name",
+    "sections": [
+      {
+        "title": "The order",
+        "sql": "select so.so_no, c.name as customer, coalesce(so.customer_ref, '') as their_ref, coalesce(w.code, '') as warehouse, to_char(so.ordered_on, 'DD Month YYYY') as ordered, coalesce(to_char(so.required_by, 'DD Month YYYY'), 'open') as required, coalesce(so.note, '') as note from sales_orders so join customers c on c.id = so.customer_id left join warehouses w on w.id = so.warehouse_id where so.id = $1"
+      },
+      {
+        "title": "To pick",
+        "note": "Outstanding quantities only. What the shelf cannot cover ships when stock lands; do not improvise.",
+        "sql": "select p.sku, p.name as product, p.unit, (l.qty - l.qty_shipped) as pick, (select coalesce(sum(m.qty), 0) from stock_moves m where m.product_id = p.id and m.warehouse_id = so.warehouse_id) as on_hand, case when p.hazardous then 'HAZ class ' || coalesce(p.haz_class, '?') else '' end as haz from so_lines l join products p on p.id = l.product_id join sales_orders so on so.id = l.so_id where l.so_id = $1 and l.qty > l.qty_shipped order by p.sku"
+      }
+    ]
+  },
+  {
+    "name": "purchase-order",
+    "title": "Purchase order",
+    "for_each": "select po.id, (po.po_no || ' ' || s.name) as name from purchase_orders po join suppliers s on s.id = po.supplier_id where po.status in ('open', 'part') order by po.expected_on nulls last",
+    "file": "name",
+    "sections": [
+      {
+        "title": "Purchase order",
+        "note": "Rendered to send to the supplier. Sending is yours: this system never sends anything.",
+        "sql": "select po.po_no, s.name as supplier, coalesce(s.contact_name, '') as attention, coalesce(s.email, '') as email, to_char(po.ordered_on, 'DD Month YYYY') as ordered, coalesce(to_char(po.expected_on, 'DD Month YYYY'), 'not agreed') as expected, coalesce(w.code, '') as deliver_to from purchase_orders po join suppliers s on s.id = po.supplier_id left join warehouses w on w.id = po.warehouse_id where po.id = $1"
+      },
+      {
+        "title": "Lines",
+        "sql": "select p.sku, p.name as product, p.unit, l.qty, l.qty_received, to_char(l.cost_cents / 100.0, 'FM$999,999,990.00') as unit_cost, to_char(l.qty * l.cost_cents / 100.0, 'FM$999,999,990.00') as line_total from po_lines l join products p on p.id = l.product_id where l.po_id = $1 order by p.sku"
+      }
+    ]
+  },
+  {
+    "name": "price-list",
+    "title": "Customer price list",
+    "for_each": "select c.id, c.name from customers c where c.status = 'active' order by c.name",
+    "file": "name",
+    "sections": [
+      {
+        "title": "Prices",
+        "note": "The price this customer actually pays per product: their own price first, then their tier, then the list. This is the page the Fair Trading Act check compares invoices against.",
+        "sql": "select p.sku, p.name as product, p.unit, case when coalesce(cp.price_cents, tp.price_cents, nullif(p.price_cents, 0)) is null then 'NO PRICE' else to_char(coalesce(cp.price_cents, tp.price_cents, p.price_cents) / 100.0, 'FM$999,999,990.00') end as price, case when cp.price_cents is not null then 'agreed' when tp.price_cents is not null then (select price_tier from customers where id = $1) || ' tier' else 'list' end as basis from products p left join prices cp on cp.product_id = p.id and cp.customer_id = $1 left join prices tp on tp.product_id = p.id and tp.customer_id is null and lower(coalesce(tp.tier, '')) = (select lower(price_tier) from customers where id = $1) where p.active order by p.sku"
+      }
     ]
   }
 ]
